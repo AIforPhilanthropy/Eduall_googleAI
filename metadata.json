@@ -1,0 +1,6 @@
+{
+  "name": "EduAll Grant Allocation & Bias Audit System",
+  "description": "AI-guided decision-making system for EduAll Foundation officers to allocate CHF 500,000 in international student grants, filter by hard eligibility criteria, rank by weighted priorities, and perform deep ethical bias and discrimination audits.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
