@@ -52,40 +52,6 @@ export default function App() {
 
   // Compute allocation and audit metrics dynamically
   const { processedApplicants, summary, auditMetrics } = useMemo(() => {
-    if (!applicants.length) {
-      return {
-        processedApplicants: [],
-        summary: {
-          totalBudget: 500000,
-          allocatedTotal: 0,
-          remainingBudget: 500000,
-          totalApplicants: 0,
-          eligibleCount: 0,
-          ineligibleCount: 0,
-          selectedCount: 0,
-          waitlistedCount: 0,
-          averageGrantSelected: 0,
-          levelCounts: { bachelor: 0, master: 0, doctoral: 0 },
-        },
-        auditMetrics: {
-          totalPool: 0,
-          selectedPool: 0,
-          byGender: {},
-          byRegion: {},
-          byGniTier: {},
-          byStudyLevel: {},
-          byRiskFactor: {
-            firstGeneration: { label: '', totalApplicants: 0, eligibleApplicants: 0, selectedCount: 0, selectionRate: 0, avgGrant: 0, avgNeed: 0, avgGpa: 0 },
-            refugeeAsylum: { label: '', totalApplicants: 0, eligibleApplicants: 0, selectedCount: 0, selectionRate: 0, avgGrant: 0, avgNeed: 0, avgGpa: 0 },
-            disability: { label: '', totalApplicants: 0, eligibleApplicants: 0, selectedCount: 0, selectionRate: 0, avgGrant: 0, avgNeed: 0, avgGpa: 0 },
-            parentStudent: { label: '', totalApplicants: 0, eligibleApplicants: 0, selectedCount: 0, selectionRate: 0, avgGrant: 0, avgNeed: 0, avgGpa: 0 },
-            housingInsecure: { label: '', totalApplicants: 0, eligibleApplicants: 0, selectedCount: 0, selectionRate: 0, avgGrant: 0, avgNeed: 0, avgGpa: 0 },
-          },
-          byPermit: {},
-          disparateImpactFlags: [],
-        },
-      };
-    }
     return runGrantAllocation(applicants, hardCriteria, softPriorities, 500000);
   }, [applicants, hardCriteria, softPriorities]);
 
@@ -220,6 +186,10 @@ export default function App() {
                 hardCriteria={hardCriteria}
                 softPriorities={softPriorities}
                 onApplyAdjustment={(adj) => setSoftPriorities((p) => ({ ...p, ...adj }))}
+                onInspectApplicantId={(id) => {
+                  const found = processedApplicants.find((a) => a.student_id === id);
+                  if (found) setInspectedApplicant(found);
+                }}
               />
             )}
 

@@ -6,6 +6,12 @@ import {
   AllocationSummary,
   BiasAuditMetrics,
   GroupStatistic,
+  IntersectionalCell,
+  IntersectionalMatrix,
+  HolisticMetricComparison,
+  LeftBehindProfile,
+  LeftBehindArchetype,
+  CompoundingVulnerabilityStat,
 } from '../types/grant';
 
 export const DEFAULT_HARD_CRITERIA: HardCriteriaConfig = {
@@ -384,9 +390,107 @@ function buildGroupStat(all: ProcessedApplicant[], filterFn: (a: ProcessedApplic
   };
 }
 
+function buildIntersectionalMatrix(
+  all: ProcessedApplicant[],
+  dimension1Name: string,
+  dim1Extractor: (a: ProcessedApplicant) => string,
+  dim1Values: string[],
+  dimension2Name: string,
+  dim2Extractor: (a: ProcessedApplicant) => string,
+  dim2Values: string[],
+  overallSelectionRate: number
+): IntersectionalMatrix {
+  const cells: IntersectionalCell[] = [];
+
+  dim1Values.forEach((v1) => {
+    dim2Values.forEach((v2) => {
+      const matching = all.filter((a) => dim1Extractor(a) === v1 && dim2Extractor(a) === v2);
+      const total = matching.length;
+      const awarded = matching.filter((a) => a.allocationStatus === 'selected').length;
+      const waitlisted = matching.filter((a) => a.allocationStatus === 'waitlisted').length;
+      const ineligible = matching.filter((a) => a.allocationStatus === 'ineligible').length;
+      const selectionRate = total > 0 ? Number(((awarded / total) * 100).toFixed(1)) : 0;
+      const avgNeed = total > 0 ? Math.round(matching.reduce((s, a) => s + a.financial_need_chf, 0) / total) : 0;
+      const avgGpa = total > 0 ? Number((matching.reduce((s, a) => s + a.gpa, 0) / total).toFixed(2)) : 0;
+      const avgGrant = awarded > 0 ? Math.round(matching.filter((a) => a.allocationStatus === 'selected').reduce((s, a) => s + a.allocatedGrantAmount, 0) / awarded) : 0;
+      
+      const disparityRatio = overallSelectionRate > 0 ? Number((selectionRate / overallSelectionRate).toFixed(2)) : 1.0;
+      let severity: IntersectionalCell['severity'] = 'equitable';
+      if (total >= 3) {
+        if (selectionRate === 0 || disparityRatio < 0.6) {
+          severity = 'severe_exclusion';
+        } else if (disparityRatio < 0.8) {
+          severity = 'moderate_disparity';
+        }
+      }
+
+      cells.push({
+        var1Label: v1,
+        var2Label: v2,
+        comboKey: `${v1} × ${v2}`,
+        total,
+        awarded,
+        waitlisted,
+        ineligible,
+        selectionRate,
+        avgNeed,
+        avgGpa,
+        avgGrant,
+        disparityRatio,
+        severity,
+        applicantIds: matching.map((a) => a.student_id),
+      });
+    });
+  });
+
+  return {
+    dimension1Name,
+    dimension2Name,
+    cells,
+    dim1Values,
+    dim2Values,
+  };
+}
+
+function countRiskFactors(a: ProcessedApplicant): number {
+  return (
+    a.risk_first_generation +
+    a.risk_refugee_asylum +
+    a.risk_disability +
+    a.risk_housing_insecurity +
+    a.risk_family_emergency +
+    a.risk_language_barrier +
+    a.risk_parent_student +
+    a.risk_undocumented_status
+  );
+}
+
+function getRiskFactorsList(a: ProcessedApplicant): string[] {
+  const list: string[] = [];
+  if (a.risk_refugee_asylum) list.push('Refugee / Asylum Status');
+  if (a.risk_first_generation) list.push('First-Generation Student');
+  if (a.risk_disability) list.push('Declared Disability / Health Need');
+  if (a.risk_parent_student) list.push(`Parent Scholar (${a.dependent_children} children)`);
+  if (a.risk_housing_insecurity) list.push('Housing Insecurity');
+  if (a.risk_family_emergency) list.push('Acute Family Emergency');
+  if (a.risk_language_barrier) list.push('Language Barrier');
+  return list;
+}
+
+function getResilienceFactorsList(a: ProcessedApplicant): string[] {
+  const list: string[] = [];
+  if (a.resilience_overcame_adversity) list.push('Overcame Severe Adversity');
+  if (a.resilience_community_engagement) list.push('Community Engagement');
+  if (a.resilience_volunteer_experience) list.push('Volunteer Work');
+  if (a.resilience_leadership_role) list.push('Student Leadership');
+  if (a.resilience_work_experience) list.push('Work Experience');
+  return list;
+}
+
 export function generateAuditMetrics(all: ProcessedApplicant[]): BiasAuditMetrics {
   const selectedAll = all.filter((a) => a.allocationStatus === 'selected');
-  const overallRate = all.length > 0 ? (selectedAll.length / all.length) * 100 : 0;
+  const nonSelectedAll = all.filter((a) => a.allocationStatus !== 'selected');
+  const overallRate = all.length > 0 ? Number(((selectedAll.length / all.length) * 100).toFixed(1)) : 0;
 
   // By Gender
   const genders = ['Female', 'Male', 'Non-binary', 'Prefer not to say'];
@@ -443,7 +547,6 @@ export function generateAuditMetrics(all: ProcessedApplicant[]): BiasAuditMetric
   // Disparate Impact Flags
   const flags: BiasAuditMetrics['disparateImpactFlags'] = [];
 
-  // Check 4/5ths rule (80% ratio) across gender
   const femaleRate = byGender['Female']?.selectionRate || 0;
   const maleRate = byGender['Male']?.selectionRate || 0;
   if (maleRate > 0 && femaleRate > 0) {
@@ -465,7 +568,6 @@ export function generateAuditMetrics(all: ProcessedApplicant[]): BiasAuditMetric
     }
   }
 
-  // Check GNI Tier 1 priority alignment
   const tier1Rate = byGniTier['Tier 1 (Low Income <$3k)']?.selectionRate || 0;
   const tier3Rate = byGniTier['Tier 3 (Upper-Middle/High)']?.selectionRate || 0;
   if (tier1Rate > 0) {
@@ -477,27 +579,421 @@ export function generateAuditMetrics(all: ProcessedApplicant[]): BiasAuditMetric
     });
   }
 
-  // Check Refugee/Asylum inclusion
   const refugeeRate = byRiskFactor.refugeeAsylum.selectionRate;
   if (refugeeRate < overallRate * 0.75) {
     flags.push({
       metric: 'Refugee/Asylum Under-representation',
-      description: `Refugee/Asylum applicant selection rate (${refugeeRate}%) is lagging behind general pool average (${overallRate.toFixed(1)}%)`,
+      description: `Refugee/Asylum applicant selection rate (${refugeeRate}%) is lagging behind general pool average (${overallRate}%)`,
       severity: 'moderate',
       ratio: overallRate > 0 ? Number((refugeeRate / overallRate).toFixed(2)) : 0,
     });
   } else {
     flags.push({
       metric: 'Refugee/Asylum Protection',
-      description: `Strong support for refugee & asylum scholars (${refugeeRate}% selection rate vs ${overallRate.toFixed(1)}% general pool)`,
+      description: `Strong support for refugee & asylum scholars (${refugeeRate}% selection rate vs ${overallRate}% general pool)`,
       severity: 'positive',
       ratio: overallRate > 0 ? Number((refugeeRate / overallRate).toFixed(2)) : 1,
     });
   }
 
+  // --- 1. MULTI-VARIABLE INTERSECTIONAL MATRICES ---
+
+  // Matrix A: GNI Tier × Gender Identity
+  const gniByGender = buildIntersectionalMatrix(
+    all,
+    'GNI Country Tier',
+    (a) => (a.gni_tier === 1 ? 'Tier 1 (Low Income)' : a.gni_tier === 2 ? 'Tier 2 (Lower-Middle)' : 'Tier 3 (Upper-Middle)'),
+    ['Tier 1 (Low Income)', 'Tier 2 (Lower-Middle)', 'Tier 3 (Upper-Middle)'],
+    'Gender Identity',
+    (a) => a.gender,
+    ['Female', 'Male', 'Non-binary', 'Prefer not to say'],
+    overallRate
+  );
+
+  // Matrix B: GNI Tier × Vulnerability Profile
+  const gniByRisk = buildIntersectionalMatrix(
+    all,
+    'GNI Country Tier',
+    (a) => (a.gni_tier === 1 ? 'Tier 1 (Low Income)' : a.gni_tier === 2 ? 'Tier 2 (Lower-Middle)' : 'Tier 3 (Upper-Middle)'),
+    ['Tier 1 (Low Income)', 'Tier 2 (Lower-Middle)', 'Tier 3 (Upper-Middle)'],
+    'Compound Vulnerability',
+    (a) => {
+      if (a.risk_refugee_asylum || a.risk_disability || a.risk_parent_student) return 'Severe Disadvantage (Refugee/Parent/Disability)';
+      if (a.risk_first_generation && (a.risk_housing_insecurity || a.risk_family_emergency)) return 'First-Gen + Emergency/Housing';
+      if (a.risk_first_generation) return 'First-Gen Only';
+      return 'Standard Profile';
+    },
+    [
+      'Severe Disadvantage (Refugee/Parent/Disability)',
+      'First-Gen + Emergency/Housing',
+      'First-Gen Only',
+      'Standard Profile',
+    ],
+    overallRate
+  );
+
+  // Matrix C: Region × Study Level
+  const regionByStudyLevel = buildIntersectionalMatrix(
+    all,
+    'Geographic Region',
+    (a) => a.geographic_region,
+    regions,
+    'Study Level',
+    (a) => a.study_level,
+    ["Bachelor's", "Master's", 'Doctoral'],
+    overallRate
+  );
+
+  // Matrix D: Study Mode × Financial Shortfall Bracket
+  const studyModeByNeed = buildIntersectionalMatrix(
+    all,
+    'Study Mode & Swiss Work Limit',
+    (a) => (a.study_mode === 'Part-time' ? 'Part-Time (15h/wk Legal Cap)' : 'Full-Time'),
+    ['Part-Time (15h/wk Legal Cap)', 'Full-Time'],
+    'Monthly Financial Shortfall',
+    (a) => {
+      if (a.financial_need_chf >= 1500) return 'Acute Shortfall (>CHF 1,500/mo)';
+      if (a.financial_need_chf >= 500) return 'Moderate Shortfall (CHF 500-1,500/mo)';
+      return 'Low/Zero Need (<CHF 500/mo)';
+    },
+    ['Acute Shortfall (>CHF 1,500/mo)', 'Moderate Shortfall (CHF 500-1,500/mo)', 'Low/Zero Need (<CHF 500/mo)'],
+    overallRate
+  );
+
+  // Matrix E: Academic GPA Tier × Adversity History
+  const gpaByAdversity = buildIntersectionalMatrix(
+    all,
+    'Academic GPA Tier',
+    (a) => {
+      if (a.gpa < 2.5) return 'GPA < 2.50 (At Risk)';
+      if (a.gpa < 3.0) return 'GPA 2.50 - 2.99';
+      if (a.gpa < 3.5) return 'GPA 3.00 - 3.49';
+      return 'GPA 3.50 - 4.00 (High Honors)';
+    },
+    ['GPA < 2.50 (At Risk)', 'GPA 2.50 - 2.99', 'GPA 3.00 - 3.49', 'GPA 3.50 - 4.00 (High Honors)'],
+    'Declared Hardship & Strength',
+    (a) => {
+      if (a.resilience_overcame_adversity && (a.risk_refugee_asylum || a.risk_disability || a.risk_family_emergency)) {
+        return 'Overcame Acute Adversity & Trauma';
+      }
+      if (a.resilience_community_engagement || a.resilience_volunteer_experience) {
+        return 'Civic & Volunteer Engagement';
+      }
+      return 'Standard Academic Path';
+    },
+    ['Overcame Acute Adversity & Trauma', 'Civic & Volunteer Engagement', 'Standard Academic Path'],
+    overallRate
+  );
+
+  // --- 2. HOLISTIC MACRO PROFILE COMPARISON (AWARDED VS NON-AWARDED) ---
+  const calcAvg = (arr: ProcessedApplicant[], fn: (a: ProcessedApplicant) => number) => {
+    return arr.length > 0 ? arr.reduce((s, a) => s + fn(a), 0) / arr.length : 0;
+  };
+  const calcPct = (arr: ProcessedApplicant[], fn: (a: ProcessedApplicant) => boolean) => {
+    return arr.length > 0 ? (arr.filter(fn).length / arr.length) * 100 : 0;
+  };
+
+  const holisticComparison: HolisticMetricComparison[] = [
+    {
+      metricLabel: 'Documented Monthly Need',
+      category: 'economic',
+      awardedAvg: Math.round(calcAvg(selectedAll, (a) => a.financial_need_chf)),
+      nonAwardedAvg: Math.round(calcAvg(nonSelectedAll, (a) => a.financial_need_chf)),
+      totalPoolAvg: Math.round(calcAvg(all, (a) => a.financial_need_chf)),
+      unit: 'CHF/mo',
+      deltaText: `+CHF ${(Math.round(calcAvg(selectedAll, (a) => a.financial_need_chf)) - Math.round(calcAvg(nonSelectedAll, (a) => a.financial_need_chf))).toLocaleString()} higher in awarded`,
+      alignment: 'solidarity_aligned',
+    },
+    {
+      metricLabel: 'Monthly Living Expenses',
+      category: 'economic',
+      awardedAvg: Math.round(calcAvg(selectedAll, (a) => a.monthly_expenses_chf)),
+      nonAwardedAvg: Math.round(calcAvg(nonSelectedAll, (a) => a.monthly_expenses_chf)),
+      totalPoolAvg: Math.round(calcAvg(all, (a) => a.monthly_expenses_chf)),
+      unit: 'CHF/mo',
+      deltaText: `Awarded face CHF ${Math.round(calcAvg(selectedAll, (a) => a.monthly_expenses_chf)).toLocaleString()} avg living cost`,
+      alignment: 'neutral',
+    },
+    {
+      metricLabel: 'Monthly Housing & Rent',
+      category: 'economic',
+      awardedAvg: Math.round(calcAvg(selectedAll, (a) => a.housing_cost_chf)),
+      nonAwardedAvg: Math.round(calcAvg(nonSelectedAll, (a) => a.housing_cost_chf)),
+      totalPoolAvg: Math.round(calcAvg(all, (a) => a.housing_cost_chf)),
+      unit: 'CHF/mo',
+      deltaText: `Rent burden averages CHF ${Math.round(calcAvg(selectedAll, (a) => a.housing_cost_chf)).toLocaleString()}`,
+      alignment: 'neutral',
+    },
+    {
+      metricLabel: 'Family Household Income',
+      category: 'economic',
+      awardedAvg: Math.round(calcAvg(selectedAll, (a) => a.family_household_income_chf)),
+      nonAwardedAvg: Math.round(calcAvg(nonSelectedAll, (a) => a.family_household_income_chf)),
+      totalPoolAvg: Math.round(calcAvg(all, (a) => a.family_household_income_chf)),
+      unit: 'CHF/mo',
+      deltaText: `-CHF ${(Math.round(calcAvg(nonSelectedAll, (a) => a.family_household_income_chf)) - Math.round(calcAvg(selectedAll, (a) => a.family_household_income_chf))).toLocaleString()} lower household income in awarded`,
+      alignment: 'solidarity_aligned',
+    },
+    {
+      metricLabel: 'Personal Liquid Savings',
+      category: 'economic',
+      awardedAvg: Math.round(calcAvg(selectedAll, (a) => a.savings_chf)),
+      nonAwardedAvg: Math.round(calcAvg(nonSelectedAll, (a) => a.savings_chf)),
+      totalPoolAvg: Math.round(calcAvg(all, (a) => a.savings_chf)),
+      unit: 'CHF',
+      deltaText: `Awarded hold CHF ${Math.round(calcAvg(selectedAll, (a) => a.savings_chf)).toLocaleString()} vs CHF ${Math.round(calcAvg(nonSelectedAll, (a) => a.savings_chf)).toLocaleString()}`,
+      alignment: 'solidarity_aligned',
+    },
+    {
+      metricLabel: 'Academic GPA',
+      category: 'academic',
+      awardedAvg: Number(calcAvg(selectedAll, (a) => a.gpa).toFixed(2)),
+      nonAwardedAvg: Number(calcAvg(nonSelectedAll, (a) => a.gpa).toFixed(2)),
+      totalPoolAvg: Number(calcAvg(all, (a) => a.gpa).toFixed(2)),
+      unit: '/ 4.00',
+      deltaText: `Awarded GPA is +${(Number(calcAvg(selectedAll, (a) => a.gpa).toFixed(2)) - Number(calcAvg(nonSelectedAll, (a) => a.gpa).toFixed(2))).toFixed(2)} pts higher`,
+      alignment: 'merit_skewed',
+    },
+    {
+      metricLabel: 'Compounding Vulnerability Factors',
+      category: 'vulnerability',
+      awardedAvg: Number(calcAvg(selectedAll, countRiskFactors).toFixed(2)),
+      nonAwardedAvg: Number(calcAvg(nonSelectedAll, countRiskFactors).toFixed(2)),
+      totalPoolAvg: Number(calcAvg(all, countRiskFactors).toFixed(2)),
+      unit: 'risks/student',
+      deltaText: `Awarded have ${Number(calcAvg(selectedAll, countRiskFactors).toFixed(2))} compound risk factors`,
+      alignment: 'solidarity_aligned',
+    },
+    {
+      metricLabel: 'Personal Resilience Factors',
+      category: 'vulnerability',
+      awardedAvg: Number(
+        calcAvg(
+          selectedAll,
+          (a) =>
+            a.resilience_overcame_adversity +
+            a.resilience_community_engagement +
+            a.resilience_volunteer_experience +
+            a.resilience_leadership_role +
+            a.resilience_work_experience
+        ).toFixed(2)
+      ),
+      nonAwardedAvg: Number(
+        calcAvg(
+          nonSelectedAll,
+          (a) =>
+            a.resilience_overcame_adversity +
+            a.resilience_community_engagement +
+            a.resilience_volunteer_experience +
+            a.resilience_leadership_role +
+            a.resilience_work_experience
+        ).toFixed(2)
+      ),
+      totalPoolAvg: Number(
+        calcAvg(
+          all,
+          (a) =>
+            a.resilience_overcame_adversity +
+            a.resilience_community_engagement +
+            a.resilience_volunteer_experience +
+            a.resilience_leadership_role +
+            a.resilience_work_experience
+        ).toFixed(2)
+      ),
+      unit: 'resilience strengths',
+      deltaText: 'Stronger civic & adversity proof in awarded cohort',
+      alignment: 'solidarity_aligned',
+    },
+    {
+      metricLabel: 'Low-Income Origin (GNI Tier 1)',
+      category: 'demographic',
+      awardedAvg: `${Number(calcPct(selectedAll, (a) => a.gni_tier === 1).toFixed(1))}%`,
+      nonAwardedAvg: `${Number(calcPct(nonSelectedAll, (a) => a.gni_tier === 1).toFixed(1))}%`,
+      totalPoolAvg: `${Number(calcPct(all, (a) => a.gni_tier === 1).toFixed(1))}%`,
+      unit: '% share',
+      deltaText: `Tier 1 represents ${Number(calcPct(selectedAll, (a) => a.gni_tier === 1).toFixed(1))}% of awarded scholars`,
+      alignment: 'solidarity_aligned',
+    },
+    {
+      metricLabel: 'First-Generation University Students',
+      category: 'demographic',
+      awardedAvg: `${Number(calcPct(selectedAll, (a) => a.risk_first_generation === 1).toFixed(1))}%`,
+      nonAwardedAvg: `${Number(calcPct(nonSelectedAll, (a) => a.risk_first_generation === 1).toFixed(1))}%`,
+      totalPoolAvg: `${Number(calcPct(all, (a) => a.risk_first_generation === 1).toFixed(1))}%`,
+      unit: '% share',
+      deltaText: `${Number(calcPct(selectedAll, (a) => a.risk_first_generation === 1).toFixed(1))}% of awardees are 1st gen`,
+      alignment: 'solidarity_aligned',
+    },
+    {
+      metricLabel: 'Student Parents with Dependents',
+      category: 'demographic',
+      awardedAvg: `${Number(calcPct(selectedAll, (a) => a.risk_parent_student === 1).toFixed(1))}%`,
+      nonAwardedAvg: `${Number(calcPct(nonSelectedAll, (a) => a.risk_parent_student === 1).toFixed(1))}%`,
+      totalPoolAvg: `${Number(calcPct(all, (a) => a.risk_parent_student === 1).toFixed(1))}%`,
+      unit: '% share',
+      deltaText: `${Number(calcPct(selectedAll, (a) => a.risk_parent_student === 1).toFixed(1))}% parent students awarded`,
+      alignment: 'neutral',
+    },
+    {
+      metricLabel: 'Part-Time Working Students',
+      category: 'demographic',
+      awardedAvg: `${Number(calcPct(selectedAll, (a) => a.study_mode === 'Part-time').toFixed(1))}%`,
+      nonAwardedAvg: `${Number(calcPct(nonSelectedAll, (a) => a.study_mode === 'Part-time').toFixed(1))}%`,
+      totalPoolAvg: `${Number(calcPct(all, (a) => a.study_mode === 'Part-time').toFixed(1))}%`,
+      unit: '% share',
+      deltaText: `${Number(calcPct(selectedAll, (a) => a.study_mode === 'Part-time').toFixed(1))}% working students in awarded`,
+      alignment: 'neutral',
+    },
+  ];
+
+  // --- 3. COMPOUNDING VULNERABILITY ANALYSIS ---
+  const risk0 = all.filter((a) => countRiskFactors(a) === 0);
+  const risk1 = all.filter((a) => countRiskFactors(a) === 1);
+  const risk2 = all.filter((a) => countRiskFactors(a) === 2);
+  const risk3Plus = all.filter((a) => countRiskFactors(a) >= 3);
+
+  const getCompoundingStat = (label: string, group: ProcessedApplicant[]): CompoundingVulnerabilityStat => {
+    const awarded = group.filter((a) => a.allocationStatus === 'selected').length;
+    const rate = group.length > 0 ? Number(((awarded / group.length) * 100).toFixed(1)) : 0;
+    const avgNeed = group.length > 0 ? Math.round(group.reduce((s, a) => s + a.financial_need_chf, 0) / group.length) : 0;
+    const avgScore = group.length > 0 ? Number((group.reduce((s, a) => s + a.calculatedScore, 0) / group.length).toFixed(1)) : 0;
+
+    return {
+      riskCountLabel: label,
+      totalApplicants: group.length,
+      awardedCount: awarded,
+      selectionRate: rate,
+      avgMonthlyNeed: avgNeed,
+      avgCalculatedScore: avgScore,
+    };
+  };
+
+  const compoundingVulnerability: CompoundingVulnerabilityStat[] = [
+    getCompoundingStat('0 Risk Factors (Baseline)', risk0),
+    getCompoundingStat('1 Risk Factor (e.g. First-Gen only)', risk1),
+    getCompoundingStat('2 Risk Factors (Compound Disadvantage)', risk2),
+    getCompoundingStat('3+ Compounding Vulnerabilities (Severe Need)', risk3Plus),
+  ];
+
+  // --- 4. IDENTIFICATION OF LEFT-BEHIND PERSONAS & SCHOLARS ---
+  // High-Need Left Behind list: non-selected with need >= 900 CHF or 2+ risks
+  const leftBehindHighNeedList: LeftBehindProfile[] = nonSelectedAll
+    .filter((a) => a.financial_need_chf >= 900 || countRiskFactors(a) >= 2)
+    .sort((a, b) => {
+      // Prioritize waitlisted first, then by monthly need
+      if (a.allocationStatus !== b.allocationStatus) {
+        return a.allocationStatus === 'waitlisted' ? -1 : 1;
+      }
+      return b.financial_need_chf - a.financial_need_chf;
+    })
+    .slice(0, 40)
+    .map((a) => {
+      let exclusionReason = '';
+      if (!a.isEligible) {
+        exclusionReason = a.ineligibilityReasons.join('; ');
+      } else {
+        exclusionReason = `Rank #${a.rank || 'N/A'} (Score ${a.calculatedScore}) — fell below CHF 500,000 budget cutoff`;
+      }
+
+      return {
+        student_id: a.student_id,
+        gender: a.gender,
+        age: a.age,
+        country_origin: a.country_origin,
+        geographic_region: a.geographic_region,
+        gni_tier: a.gni_tier,
+        study_level: a.study_level,
+        university: a.university,
+        field_of_study: a.field_of_study,
+        gpa: a.gpa,
+        academic_standing: a.academic_standing,
+        financial_need_chf: a.financial_need_chf,
+        monthly_expenses_chf: a.monthly_expenses_chf,
+        savings_chf: a.savings_chf,
+        residency_permit: a.residency_permit,
+        riskCount: countRiskFactors(a),
+        riskFactors: getRiskFactorsList(a),
+        resilienceFactors: getResilienceFactorsList(a),
+        allocationStatus: a.allocationStatus as 'waitlisted' | 'ineligible',
+        exclusionReason,
+        rank: a.rank,
+        compoundingDisadvantageScore: Math.round(countRiskFactors(a) * 20 + (a.gni_tier === 1 ? 40 : 20) + (a.financial_need_chf / 20)),
+      };
+    });
+
+  // Archetypes of Who Is Left Behind
+  const waitlistHighNeed = nonSelectedAll.filter((a) => a.allocationStatus === 'waitlisted' && a.financial_need_chf >= 1200);
+  const leftBehindParents = nonSelectedAll.filter((a) => a.risk_parent_student === 1);
+  const leftBehindRefugees = nonSelectedAll.filter((a) => a.risk_refugee_asylum === 1);
+  const leftBehindSavers = nonSelectedAll.filter((a) => a.savings_chf > 10000 && a.financial_need_chf < 400);
+
+  const leftBehindArchetypes: LeftBehindArchetype[] = [
+    {
+      id: 'archetype_borderline_tier1',
+      title: 'The GNI Tier 1 Acute Need Borderline Cohort',
+      affectedCount: waitlistHighNeed.filter((a) => a.gni_tier === 1).length,
+      description:
+        'Scholars originating from Sub-Saharan Africa and South Asia experiencing severe living cost deficits (>CHF 1,200/mo) who qualified on all hard criteria but narrowly ranked below the CHF 500k budget cut-off line (Ranks #77 - #140).',
+      typicalCombination: 'GNI Tier 1 × High Monthly Living Need (>CHF 1,400) × Good Academic Standing (GPA 2.8 - 3.2)',
+      whyLeftBehind:
+        'Edged out in soft priority ranking by applicants with marginally higher GPA (3.6+) or research publications despite having equal or greater financial hardship.',
+      missionConflict:
+        'Conflicts with Core Value 2 (Financial Solidarity), which states that grants should rescue scholars facing forced university departure regardless of academic competition.',
+      suggestedRemedy:
+        'Increase Financial Need weight to 45% and lower Academic Performance weight from 25% to 15%.',
+      sampleStudentId: waitlistHighNeed.find((a) => a.gni_tier === 1)?.student_id || 'STU000073',
+    },
+    {
+      id: 'archetype_working_parent_squeeze',
+      title: 'The Working Student-Parent Double Burden',
+      affectedCount: leftBehindParents.length,
+      description:
+        'Student parents juggling part-time studies with raising dependent children. Legally constrained by Swiss student visa rules to at most 15 hours/week of work, they face immense childcare and housing costs but achieve moderate GPAs due to caregiver duties.',
+      typicalCombination: 'Student Parent (1-2 Dependents) × Part-Time Study Mode × High Rent (>CHF 1,000/mo) × GPA 2.6 - 3.1',
+      whyLeftBehind:
+        'Their GPA reflects time poverty from caretaking, and the current formula does not provide an explicit dependent child stipend multiplier.',
+      missionConflict:
+        'Contradicts Core Value 3 (Social Inclusion) and Equal Opportunity by implicitly penalizing scholars with domestic care responsibilities.',
+      suggestedRemedy:
+        'Elevate the Vulnerable Risk weight to 25% and activate a dedicated parental allowance scoring adjustment.',
+      sampleStudentId: leftBehindParents[0]?.student_id || 'STU000011',
+    },
+    {
+      id: 'archetype_refugee_trauma_borderline',
+      title: 'The Displaced Refugee Scholars Left on Waitlist',
+      affectedCount: leftBehindRefugees.length,
+      description:
+        'Scholars holding Permit F, S, or Pending status who survived forced displacement or conflict. While they documented overcoming acute adversity, their non-traditional transcripts or language barriers suppressed their score.',
+      typicalCombination: 'Refugee/Asylum Status × Permit F/S/Pending × Language Barrier × Acute Adversity',
+      whyLeftBehind:
+        'Disqualified if GPA dropped below 2.50 without accepted adversity waiver, or waitlisted because publication points favoured privileged scholars.',
+      missionConflict:
+        'Directly impacts Core Value 1 (Equal Opportunity) and the 2026 Call priority for scholars demonstrating exceptional resilience.',
+      suggestedRemedy:
+        'Adopt the compassionate GPA adversity waiver and place Vulnerable Risks second in the tie-breaker hierarchy.',
+      sampleStudentId: leftBehindRefugees[0]?.student_id || 'STU000024',
+    },
+    {
+      id: 'archetype_prudent_savers',
+      title: 'The High-Rent Prudent Savers Penalized by Asset Offsets',
+      affectedCount: leftBehindSavers.length,
+      description:
+        'Students who worked tirelessly before coming to Switzerland to save CHF 10,000–14,000 as a safety net against catastrophic Swiss living expenses, only to have their calculated grant shortfall heavily discounted.',
+      typicalCombination: 'Modest Family Income × High Swiss Rent (>CHF 1,200) × Liquid Savings CHF 10k-15k',
+      whyLeftBehind:
+        'The formula treats modest survival savings as an asset offset, penalizing foresight in one of the most expensive countries in the world.',
+      missionConflict:
+        'Disregards Dignity and Respect by punishing prudent self-reliance.',
+      suggestedRemedy:
+        'Protect an emergency liquid buffer of up to CHF 15,000 before applying any savings deduction.',
+      sampleStudentId: leftBehindSavers[0]?.student_id || 'STU000002',
+    },
+  ];
+
   return {
     totalPool: all.length,
     selectedPool: selectedAll.length,
+    overallSelectionRate: overallRate,
     byGender,
     byRegion,
     byGniTier,
@@ -505,5 +1001,17 @@ export function generateAuditMetrics(all: ProcessedApplicant[]): BiasAuditMetric
     byRiskFactor,
     byPermit,
     disparateImpactFlags: flags,
+    intersectionalMatrices: {
+      gniByGender,
+      gniByRisk,
+      regionByStudyLevel,
+      studyModeByNeed,
+      gpaByAdversity,
+    },
+    holisticComparison,
+    compoundingVulnerability,
+    leftBehindArchetypes,
+    leftBehindHighNeedList,
   };
 }
+

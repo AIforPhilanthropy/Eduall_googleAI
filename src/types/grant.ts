@@ -111,17 +111,102 @@ export interface AllocationSummary {
 export interface GroupStatistic {
   label: string;
   totalApplicants: number;
-  eligibleApplicants: number;
+  eligibleApplicants?: number;
   selectedCount: number;
-  selectionRate: number; // selectedCount / totalApplicants in group
+  selectionRate: number;
+  avgNeed: number;
   avgGrant: number;
+  avgGpa?: number;
+}
+
+export interface IntersectionalCell {
+  var1Label: string;
+  var2Label: string;
+  comboKey: string;
+  total: number;
+  awarded: number;
+  waitlisted: number;
+  ineligible: number;
+  selectionRate: number; // percentage (0-100)
   avgNeed: number;
   avgGpa: number;
+  avgGrant: number;
+  disparityRatio: number; // relative to pool baseline rate
+  severity: 'equitable' | 'moderate_disparity' | 'severe_exclusion';
+  applicantIds?: string[];
+}
+
+export interface IntersectionalMatrix {
+  dimension1Name: string;
+  dimension2Name: string;
+  cells: IntersectionalCell[];
+  dim1Values: string[];
+  dim2Values: string[];
+  description?: string;
+}
+
+export interface HolisticMetricComparison {
+  metricLabel: string;
+  category: 'economic' | 'academic' | 'vulnerability' | 'demographic';
+  awardedAvg: number | string;
+  nonAwardedAvg: number | string;
+  totalPoolAvg: number | string;
+  unit: string;
+  deltaText: string;
+  alignment: 'solidarity_aligned' | 'merit_skewed' | 'neutral';
+  alignmentAssessment?: string;
+}
+
+export interface LeftBehindProfile {
+  student_id: string;
+  gender: string;
+  age: number;
+  country_origin: string;
+  geographic_region: string;
+  gni_tier: number;
+  study_level: string;
+  university: string;
+  field_of_study: string;
+  gpa: number;
+  academic_standing: string;
+  financial_need_chf: number;
+  monthly_expenses_chf: number;
+  savings_chf: number;
+  residency_permit: string;
+  riskCount: number;
+  riskFactors: string[];
+  resilienceFactors: string[];
+  allocationStatus: 'waitlisted' | 'ineligible';
+  exclusionReason: string;
+  rank?: number;
+  compoundingDisadvantageScore: number;
+}
+
+export interface LeftBehindArchetype {
+  id: string;
+  title: string;
+  affectedCount: number;
+  description: string;
+  typicalCombination: string;
+  whyLeftBehind: string;
+  missionConflict: string;
+  suggestedRemedy: string;
+  sampleStudentId: string;
+}
+
+export interface CompoundingVulnerabilityStat {
+  riskCountLabel: string; // '0 Risk Factors', '1 Risk Factor', '2 Risk Factors', '3+ Compounding Risks'
+  totalApplicants: number;
+  awardedCount: number;
+  selectionRate: number;
+  avgMonthlyNeed: number;
+  avgCalculatedScore: number;
 }
 
 export interface BiasAuditMetrics {
   totalPool: number;
   selectedPool: number;
+  overallSelectionRate: number;
   byGender: Record<string, GroupStatistic>;
   byRegion: Record<string, GroupStatistic>;
   byGniTier: Record<string, GroupStatistic>;
@@ -140,6 +225,18 @@ export interface BiasAuditMetrics {
     severity: 'low' | 'moderate' | 'high' | 'positive';
     ratio: number;
   }[];
+  // Multi-variable & intersectional additions:
+  intersectionalMatrices: {
+    gniByGender: IntersectionalMatrix;
+    gniByRisk: IntersectionalMatrix;
+    regionByStudyLevel: IntersectionalMatrix;
+    studyModeByNeed: IntersectionalMatrix;
+    gpaByAdversity: IntersectionalMatrix;
+  };
+  holisticComparison: HolisticMetricComparison[];
+  compoundingVulnerability: CompoundingVulnerabilityStat[];
+  leftBehindArchetypes: LeftBehindArchetype[];
+  leftBehindHighNeedList: LeftBehindProfile[];
 }
 
 export interface GeminiQuestionOption {
@@ -173,6 +270,21 @@ export interface GeminiAuditReport {
     dignityRespectAnalysis: string;
     sustainableImpactAnalysis: string;
   };
+  intersectionalFindings: {
+    combinationTitle: string;
+    compoundVariables: string;
+    finding: string;
+    severity: 'critical' | 'moderate' | 'equitable';
+    societalMechanism: string;
+    impactOnLivingInSwitzerland: string;
+  }[];
+  whoIsLeftBehindAnalysis: {
+    forensicDiagnosis: string;
+    excludedVulnerableGroups: string[];
+    structuralBlindspots: string;
+    borderlineWaitlistCritique: string;
+  };
+  holisticCohortVerdict: string;
   disparitiesAndBiases: {
     title: string;
     severity: 'critical' | 'moderate' | 'informational';
@@ -184,3 +296,4 @@ export interface GeminiAuditReport {
   societalContextEvaluation: string;
   actionableRecommendations: string[];
 }
+
